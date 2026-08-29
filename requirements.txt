@@ -1,0 +1,14 @@
+# GD-Net re-implementation dependencies.
+# Install with:  pip install -r requirements.txt
+# NOTE: on a machine WITHOUT a CUDA GPU, install the CPU-only torch first:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0
+numpy
+pandas
+scipy
+scikit-learn
+xgboost
+lifelines        # Cox proportional hazards with elastic-net penalty + C-index + log-rank
+anndata          # .h5ad multi-omics container (same format as the official repo)
+statsmodels      # Benjamini-Hochberg FDR correction
+matplotlib       # Kaplan-Meier plots
