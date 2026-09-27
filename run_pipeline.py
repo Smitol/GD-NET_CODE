@@ -4,7 +4,9 @@
 Takes the same inputs as main.py (fused h5ad + KEGG edges + survival) and runs
 EVERYTHING end-to-end:
 
-  1. train the contrastive GCN encoder      (paper Fig. 1B, via main.py functions)
+  1. train the contrastive GCN encoder      (paper Fig. 1B, via main.py functions),
+     selecting the middle-layer size {10,20,50} and learning rate
+     {1e-2,1e-3,1e-4,1e-5} by 5-fold C-index  (paper SI hyper-parameters)
   2. Cox-Elastic-Net risk model, 5-fold CV  (paper Table 1: C-index +/- std)
   3. median-split high/low risk groups      (paper Fig. 1D)
   4. XGBoost top-200 feature importance     (paper Fig. 1C, Section 2.1.5)
@@ -13,6 +15,7 @@ EVERYTHING end-to-end:
   7. Kaplan-Meier plot of the risk groups   (paper Fig. 3E)
 
 Outputs land in <out>/:
+    hparam_search.csv, selected_hparams.csv, train_log.csv,
     embeddings.csv, cv_results.csv, risk_groups.csv,
     xgboost_top200.csv, differential_features.csv,
     ifms.txt, key_ifms.txt, km_curve.png
@@ -22,7 +25,11 @@ Example (bundled demo data, ~2 min on CPU):
         --input_h5ad_path data/paad_demo/paad.h5ad \
         --input_edge_path data/paad_demo/paad_edges.csv \
         --surv_path       data/paad_demo/paad_surv.csv \
-        --epochs 100 --out results/paad_demo
+        --out results/paad_demo
+
+The SI search trains the encoder 3 x 4 = 12 times. To train a single
+configuration instead, pass both --low_dim and --lr (or narrow the grids with
+--low_dim_grid / --lr_grid).
 
 For your own data (after preprocessing, see README):
     python run_pipeline.py \
@@ -42,9 +49,11 @@ import torch
 
 # reuse the training code from main.py
 from main import extract_embeddings, train_encoder
+from gdnet import hparams as HP
 from gdnet.cox_en import cross_validate, predict_risk_groups
 from gdnet.feature_selection import (differential_analysis, informative_features,
                                      xgboost_importance)
+from gdnet.tuning import select_hyperparameters
 from gdnet.utils import (ensure_dir, load_edges, load_h5ad, load_survival,
                          seed_everything)
 
@@ -56,17 +65,27 @@ def get_args():
     p.add_argument("--surv_path", required=True,
                    help="survival csv (transposed authors' format or tidy sample,time,status)")
     p.add_argument("--out", default="results/run")
-    # training hyper-parameters (see main.py for docs)
-    p.add_argument("--epochs", type=int, default=200)
-    p.add_argument("-b", "--batch_size", type=int, default=512)
-    p.add_argument("--lr", type=float, default=0.01)
-    p.add_argument("--momentum", type=float, default=0.9)
-    p.add_argument("--wd", type=float, default=1e-6)
+    # training hyper-parameters -- defaults = paper SI (gdnet/hparams.py)
+    p.add_argument("--epochs", type=int, default=HP.EPOCHS)
+    p.add_argument("-b", "--batch_size", type=int, default=HP.BATCH_SIZE)
+    p.add_argument("--low_dim_grid", type=int, nargs="+", default=list(HP.LOW_DIM_GRID),
+                   help="middle-layer sizes searched by 5-fold CV (SI: 10 20 50)")
+    p.add_argument("--lr_grid", type=float, nargs="+", default=list(HP.LR_GRID),
+                   help="learning rates searched by 5-fold CV (SI: 1e-2 1e-3 1e-4 1e-5)")
+    p.add_argument("--low_dim", type=int, default=None,
+                   help="fix the middle-layer size (overrides --low_dim_grid)")
+    p.add_argument("--lr", type=float, default=None,
+                   help="fix the learning rate (overrides --lr_grid)")
+    p.add_argument("--hidden1", type=int, default=HP.HIDDEN1)
+    p.add_argument("--hidden2", type=int, default=HP.HIDDEN2)
+    p.add_argument("--momentum", type=float, default=HP.SGD_MOMENTUM,
+                   help="SGD optimiser momentum (not in the SI)")
+    p.add_argument("--wd", type=float, default=HP.WEIGHT_DECAY)
     p.add_argument("--cos", action="store_true", default=True)
-    p.add_argument("--low_dim", type=int, default=200)
-    p.add_argument("--moco_r", type=int, default=512)
-    p.add_argument("--moco_m", type=float, default=0.999)
-    p.add_argument("--temperature", type=float, default=0.2)
+    p.add_argument("--moco_r", type=int, default=HP.QUEUE_SIZE)
+    p.add_argument("--moco_m", type=float, default=HP.MOCO_MOMENTUM,
+                   help="momentum coefficient of Eq. 5 (SI: 0.99)")
+    p.add_argument("--temperature", type=float, default=HP.TEMPERATURE)
     # Cox-EN hyper-parameters -- TUNE if CI is low on your cancer
     p.add_argument("--penalizer", type=float, default=0.1)
     p.add_argument("--l1_ratio", type=float, default=0.5)
@@ -112,8 +131,29 @@ def main():
         # z-score features (see main.py for why)
         mu, sd = X_raw.mean(0, keepdims=True), X_raw.std(0, keepdims=True)
         Xz = (X_raw - mu) / np.maximum(sd, 1e-8)
-        model = train_encoder(Xz, edge_index, args, device)
-        emb = extract_embeddings(model, Xz, device)
+
+        # SI: middle-layer size and LR "selected based on the 5-fold results"
+        low_dims = [args.low_dim] if args.low_dim is not None else args.low_dim_grid
+        lrs = [args.lr] if args.lr is not None else args.lr_grid
+        if len(low_dims) * len(lrs) > 1:
+            print(f"\n--- 5-fold hyper-parameter search: low_dim {low_dims} x "
+                  f"lr {lrs} ({len(low_dims) * len(lrs)} encoder trainings) ---")
+            best = select_hyperparameters(Xz, edge_index, time_arr, status_arr,
+                                          args, device, low_dim_grid=low_dims,
+                                          lr_grid=lrs)
+            model, emb = best["model"], best["embeddings"]
+            args.low_dim, args.lr = best["low_dim"], best["lr"]
+        else:
+            args.low_dim, args.lr = low_dims[0], lrs[0]
+            print(f"training single configuration: low_dim={args.low_dim} lr={args.lr:g}")
+            model = train_encoder(Xz, edge_index, args, device)
+            emb = extract_embeddings(model, Xz, device)
+        model.train_log_.to_csv(os.path.join(args.out, "train_log.csv"), index=False)
+        pd.DataFrame([{"low_dim": args.low_dim, "lr": args.lr,
+                       "hidden1": args.hidden1, "hidden2": args.hidden2,
+                       "epochs": args.epochs, "moco_m": args.moco_m,
+                       "sgd_momentum": args.momentum}]) \
+            .to_csv(os.path.join(args.out, "selected_hparams.csv"), index=False)
         pd.DataFrame(emb, index=obs_names,
                      columns=[f"z{i}" for i in range(emb.shape[1])]).to_csv(emb_path)
 

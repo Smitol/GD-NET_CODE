@@ -2,8 +2,7 @@
 momentum-contrast framework (paper Sections 2.1.3, Eq. 2-5).
 
 This file is adapted from the authors' official `pcl/builder.py`
-(https://github.com/JackiLin/GD-Net) with three practical changes, each marked
-with "# CHANGED":
+(https://github.com/JackiLin/GD-Net) with four changes, each marked with "# CHANGED":
 
 1. CPU/GPU agnostic ........ the original hard-codes `.cuda()`; we take a
                              `device` argument so it also runs on CPU.
@@ -23,6 +22,10 @@ with "# CHANGED":
                              (~150-500 patients), so we auto-shrink the queue
                              to a multiple of the batch size instead of
                              crashing on the original `assert`.
+4. SI hyper-parameters ..... encoder is F -> 1024 -> 128 -> dim (dim from
+                             {10, 20, 50}) and the key-encoder momentum is
+                             0.99, per the paper's Supporting Information
+                             (see gdnet/hparams.py).
 """
 
 import torch
@@ -99,14 +102,27 @@ def full_block(in_features, out_features, p_drop=0.0):
 
 
 class MLPEncoder(nn.Module):
-    """GCN + MLP encoder (same layer sizes as the official code: F -> 1024 -> low_dim)."""
+    """GCN + MLP encoder:  F -> 1024 -> 128 -> dim   (paper SI hyper-parameters).
 
-    def __init__(self, adj_hat, num_genes=10000, num_hiddens=128, p_drop=0.0):
+    Hidden layer 1 (1024 nodes) and hidden layer 2 (128 nodes) are
+    Linear+ReLU blocks; the "middle hidden layer" of `dim` nodes (chosen from
+    {10, 20, 50} in the SI) is a plain Linear projection whose output is the
+    embedding. It has no ReLU, so the embedding can take negative values
+    before the L2 normalisation in MoCo; a ReLU there would clip dimensions
+    to zero and waste some of the already small bottleneck.
+
+    # CHANGED vs. the official code (F -> 1024 -> low_dim): the 128-node
+    # hidden layer and the separate embedding layer follow the SI.
+    """
+
+    def __init__(self, adj_hat, num_genes=10000, dim=20,
+                 hidden1=1024, hidden2=128, p_drop=0.0):
         super().__init__()
         self.gcn = GCNLayer(adj_hat)
         self.encoder = nn.Sequential(
-            full_block(num_genes, 1024, p_drop),
-            full_block(1024, num_hiddens, p_drop),
+            full_block(num_genes, hidden1, p_drop),   # hidden layer 1
+            full_block(hidden1, hidden2, p_drop),     # hidden layer 2
+            nn.Linear(hidden2, dim),                  # middle layer = embedding
         )
 
     def forward(self, x):
@@ -121,18 +137,20 @@ class MLPEncoder(nn.Module):
 #   - queue of negative keys for the InfoNCE contrastive loss (Eq. 3)
 # ---------------------------------------------------------------------------
 class MoCo(nn.Module):
-    def __init__(self, adj_hat, num_genes, dim=128, r=512, m=0.999, T=0.2,
-                 batch_size=None, device="cpu"):
+    def __init__(self, adj_hat, num_genes, dim=20, r=512, m=0.99, T=0.2,
+                 batch_size=None, device="cpu", hidden1=1024, hidden2=128):
         """
         Args:
             adj_hat:    precomputed normalised adjacency (from normalized_adjacency()).
             num_genes:  number of input features.
-            dim:        embedding dimension (paper/README: --low_dim 200).
+            dim:        embedding ("middle hidden layer") size; SI grid {10, 20, 50}.
             r:          queue size (number of negative keys).
-            m:          momentum for the key encoder (Eq. 5; official default 0.999).
+            m:          momentum coefficient of the key encoder (Eq. 5); SI: 0.99
+                        (the official repo used 0.999).
             T:          softmax temperature of the contrastive loss (official 0.2).
             batch_size: if given, r is rounded DOWN to a multiple of it   # CHANGED
             device:     'cpu' or 'cuda'                                    # CHANGED
+            hidden1/2:  hidden-layer sizes (SI: 1024 and 128).
         """
         super().__init__()
         self.m = m
@@ -145,8 +163,10 @@ class MoCo(nn.Module):
             r = max(batch_size, (r // batch_size) * batch_size)
         self.r = r
 
-        self.encoder_q = MLPEncoder(adj_hat, num_genes=num_genes, num_hiddens=dim)
-        self.encoder_k = MLPEncoder(adj_hat, num_genes=num_genes, num_hiddens=dim)
+        self.encoder_q = MLPEncoder(adj_hat, num_genes=num_genes, dim=dim,
+                                    hidden1=hidden1, hidden2=hidden2)
+        self.encoder_k = MLPEncoder(adj_hat, num_genes=num_genes, dim=dim,
+                                    hidden1=hidden1, hidden2=hidden2)
 
         # key encoder starts as a copy of the query encoder and is never
         # updated by gradients (only by momentum) -- Eq. 5

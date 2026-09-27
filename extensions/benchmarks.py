@@ -15,8 +15,8 @@ the return value is a 1-D risk score for the test patients
 (HIGHER risk = SHORTER expected survival).
 
 IMPLEMENTATION HONESTY -- the original papers do not all ship code, and the
-GD-Net paper gives no benchmark hyper-parameters (they are in unavailable
-supplementary material). Each implementation below is a faithful,
+GD-Net paper and its Supporting Information give no benchmark
+hyper-parameters. Each implementation below is a faithful,
 *documented* re-creation of the method's published idea; expect results in
 the ballpark of Table 1, not identical. Places you may want to tune are
 marked with "# TUNE".

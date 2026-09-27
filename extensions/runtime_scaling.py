@@ -18,12 +18,12 @@ Example (fast: 10 epochs per size):
 import argparse
 import os
 import time as time_mod
-import types
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from gdnet import hparams as HP
 from gdnet.utils import ensure_dir, load_edges, load_h5ad, seed_everything
 from main import train_encoder
 
@@ -55,12 +55,9 @@ def main():
         sub = rng.choice(n, size=m, replace=False)
         Xs = X[sub]
         Xs = (Xs - Xs.mean(0)) / np.maximum(Xs.std(0), 1e-8)
-        targs = types.SimpleNamespace(epochs=args.epochs, batch_size=512,
-                                      lr=0.01, momentum=0.9, wd=1e-6, cos=True,
-                                      low_dim=200, moco_r=512, moco_m=0.999,
-                                      temperature=0.2, out=args.out)
+        targs = HP.train_args(epochs=args.epochs, out=args.out)
         t0 = time_mod.time()
-        train_encoder(Xs, edge_index, targs, "cpu")
+        train_encoder(Xs, edge_index, targs, "cpu", log=False)
         dt = time_mod.time() - t0
         rows.append({"n_samples": m, "seconds": dt,
                      "sec_per_epoch": dt / args.epochs})

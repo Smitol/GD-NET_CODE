@@ -13,8 +13,8 @@ Evaluation (paper Section 2.2):
 Implementation notes:
   * We use `lifelines.CoxPHFitter(penalizer, l1_ratio)` which implements the
     elastic-net penalty  lambda * ( l1_ratio*|b|_1 + (1-l1_ratio)/2*|b|_2^2 ).
-    The paper does not publish lambda / l1_ratio (they are in unavailable
-    supplementary material); the defaults below (penalizer=0.1, l1_ratio=0.5)
+    Neither the paper nor its Supporting Information gives lambda / l1_ratio;
+    the defaults below (penalizer=0.1, l1_ratio=0.5)
     are a balanced choice.  <-- TUNE THESE if you want to squeeze out more CI.
 """
 
@@ -31,7 +31,7 @@ def fit_cox_en(embeddings: np.ndarray, time: np.ndarray, status: np.ndarray,
     """Fit the Cox-EN model on (n_patients, n_dims) embeddings.
 
     ROBUSTNESS (important on small TCGA cohorts, ~150-500 patients):
-    the encoder's embeddings are L2-normalised, so the 200 dimensions are
+    the encoder's embeddings are L2-normalised, so the embedding dimensions are
     tiny-scale and partly collinear -- feeding them raw makes lifelines'
     Newton-Raphson diverge ("delta contains nan"). We therefore
       1. drop near-constant embedding dimensions,

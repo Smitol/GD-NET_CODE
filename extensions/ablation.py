@@ -24,12 +24,12 @@ Lower --epochs for a quick look.
 
 import argparse
 import os
-import types
 
 import numpy as np
 import pandas as pd
 import torch
 
+from gdnet import hparams as HP
 from gdnet.cox_en import cross_validate
 from gdnet.utils import (ensure_dir, load_edges, load_h5ad, load_survival,
                          modality_of, seed_everything)
@@ -61,12 +61,13 @@ def main():
     ap.add_argument("--input_edge_path", required=True)
     ap.add_argument("--surv_path", required=True)
     ap.add_argument("--out", default="results/ablation")
-    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--epochs", type=int, default=HP.EPOCHS)
     ap.add_argument("--seed", type=int, default=42)
-    # forwarded encoder hyper-parameters (same defaults as run_pipeline.py)
-    ap.add_argument("--batch_size", type=int, default=512)
-    ap.add_argument("--lr", type=float, default=0.01)
-    ap.add_argument("--low_dim", type=int, default=200)
+    # forwarded encoder hyper-parameters (paper SI, gdnet/hparams.py).
+    # Tip: pass the values run_pipeline.py wrote to selected_hparams.csv.
+    ap.add_argument("--batch_size", type=int, default=HP.BATCH_SIZE)
+    ap.add_argument("--lr", type=float, default=HP.DEFAULT_LR)
+    ap.add_argument("--low_dim", type=int, default=HP.DEFAULT_LOW_DIM)
     args = ap.parse_args()
 
     seed_everything(args.seed)
@@ -93,11 +94,9 @@ def main():
         mu, sd = Xm.mean(0, keepdims=True), Xm.std(0, keepdims=True)
         Xz = (Xm - mu) / np.maximum(sd, 1e-8)
         # train_encoder() reads hyper-params from an argparse-like namespace:
-        targs = types.SimpleNamespace(
-            epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
-            momentum=0.9, wd=1e-6, cos=True, low_dim=args.low_dim,
-            moco_r=512, moco_m=0.999, temperature=0.2, out=args.out)
-        model = train_encoder(Xz, em, targs, "cpu")
+        targs = HP.train_args(epochs=args.epochs, batch_size=args.batch_size,
+                              lr=args.lr, low_dim=args.low_dim, out=args.out)
+        model = train_encoder(Xz, em, targs, "cpu", log=False)
         emb = extract_embeddings(model, Xz, "cpu")
 
         cv = cross_validate(emb, time, status, n_splits=5, seed=args.seed)
