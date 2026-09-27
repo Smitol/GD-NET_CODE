@@ -17,7 +17,7 @@ Run every module from the **repo root** with `python -m extensions.<module>`
 | 3b | Runtime scaling analysis (Fig S3) | `runtime_scaling.py` | time-vs-n CSV + linear-fit plot |
 | 4 | PCoA, PERMANOVA, t-SNE, KMeans+ARI w/ shuffle baseline (Fig 2D/2E, 3D) | `ordination.py` | `pcoa.png`, `tsne.png`, `ordination_stats.txt` |
 | 5 | GO/KEGG enrichment, STRING PPI, ENCORI miRNA-targets (Sec 2.5, Fig 3F/3G, Table S3) | `enrichment.py` (web APIs) / `r_scripts/clusterProfiler_enrichment.R` (exact paper) | enrichment CSVs, bar plot, network TSV, degree table |
-| 6 | GSE54236 validation + 345-sample staged-cohort trends (Sec 3.4, Fig S5/S6) | `external_validation.py` | per-gene KM + log-rank CSV, stage-trend boxplots |
+| 6 | GSE54236 validation + 345-sample staged-cohort trends (Sec 3.4, Fig S5/S6) | `external_validation.py` | KM + log-rank of the two GD-Net predicted groups (Fig S5), per-gene KM, stage-trend boxplots |
 | 7 | Real DESeq2 differential expression (Sec 2.3–2.4) | `deseq2_analysis.py` (pydeseq2) / `r_scripts/run_deseq2.R` (exact paper) | DEG tables, volcano plot |
 | 8 | LUAD (or any-cancer) full case study (Discussion, Fig S8) | `case_study.py` | chains 4+5+Table-2 for one cancer |
 | + | Methylation-vs-expression inverse-relation analysis (Fig S7 — bonus, not on the original list) | `methylation_expression.py` | gene table + scatter |
@@ -46,7 +46,8 @@ python -m extensions.run_benchmarks \
 # 2. ablation (Fig 2C) — trains the encoder 4×
 python -m extensions.ablation \
     --input_h5ad_path data/processed/$C.h5ad --input_edge_path data/processed/${C}_edges.csv \
-    --surv_path data/processed/${C}_surv.csv --epochs 100 --out results/$C/ablation
+    --surv_path data/processed/${C}_surv.csv --out results/$C/ablation
+    # add --low_dim / --lr from results/$C/selected_hparams.csv to match the main run
 
 # 3. full case study (ordination + meth-expr + enrichment + Table 2)
 python -m extensions.case_study \
@@ -58,8 +59,12 @@ python -m extensions.deseq2_analysis \
     --risk_groups results/$C/risk_groups.csv --out results/$C/deseq2
 
 # 5. external validation (liver cancer only, paper Fig S5/S6)
+#    GSE54236 has NO vital status on GEO: pass real status with --surv_tsv, or
+#    explicitly --assume_all_events (see "Honesty notes" below)
 python -m extensions.external_validation gse54236 \
-    --genes SPP1 SLC27A5 IGF2 EFNA3 DCAF4L2 --out results/$C/validation
+    --tcga_h5ad data/processed/$C.h5ad --risk_groups results/$C/risk_groups.csv \
+    --genes_file results/$C/key_ifms.txt --genes SPP1 SLC27A5 IGF2 EFNA3 DCAF4L2 \
+    --assume_all_events --out results/$C/validation
 python -m extensions.external_validation stages \
     --expr_tsv data/TCGA-$C/TCGA-$C.star_fpkm-uq.tsv \
     --clinical_tsv data/TCGA-$C/TCGA-$C.clinical.tsv \
@@ -73,8 +78,8 @@ python -m extensions.runtime_scaling \
 
 ## Honesty notes (read before comparing numbers to the paper)
 
-* **Benchmark hyper-parameters are not published** (supplementary material is
-  unavailable) — each of the six methods is a faithful re-creation of its
+* **Benchmark hyper-parameters are not published** (the paper's Supporting
+  Information only gives GD-Net's own settings) — each of the six methods is a faithful re-creation of its
   published *idea* with sensible defaults, `# TUNE` comments mark the knobs.
   Expect Table-1-ballpark numbers, not identical ones.
 * **MTC** (Qiu 2020) is a *meta-learning* method that pre-trains on external
@@ -82,9 +87,18 @@ python -m extensions.runtime_scaling \
   self-supervised pre-training + Cox fine-tuning (documented in the code).
 * **AUC** definition (the paper never specifies one): event-by-median-follow-up
   binary ROC, censored-before-horizon samples excluded.
-* **GSE54236** is an Agilent two-channel array — cross-platform application of
-  the trained TCGA model is not meaningful; like the paper's Fig S5 we
-  validate the *key genes* by expression-split survival analysis instead.
+* **GSE54236** is an mRNA-only Agilent array (GPL6480), so the multi-omics
+  TCGA encoder cannot be applied to it directly. To reproduce Fig S5 ("the
+  two predicted groups"), an L2 logistic regression learns the GD-Net
+  high/low-risk label on TCGA from the key genes' expression. Both cohorts
+  are z-scored per gene within themselves, the model scores the 78
+  GSE54236 tumours, and they are median-split into two predicted groups for KM
+  and a two-tailed log-rank test. A per-gene median-split KM is written too.
+* **GSE54236 survival status:** GEO gives only "survival time(months)" and
+  **no death/censoring indicator**. The script refuses to guess. Supply real
+  status with `--surv_tsv`, or opt in to `--assume_all_events`, which treats
+  every patient as deceased and is written into every output file. Technical
+  replicate arrays (`*_rep1`) and non-tumour arrays are excluded.
 * **PERMANOVA/PCoA** are implemented from the standard definitions
   (Torgerson MDS + Anderson 2001) — results match R `vegan`/`ape` up to
   permutation noise.
